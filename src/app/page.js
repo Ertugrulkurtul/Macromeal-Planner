@@ -40,107 +40,126 @@ const toNumber = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-// Besin değerleri (g protein / g karbonhidrat / g yağ — her 100g için)
-const MACROS_PER_100G = {
-
-  tavuk:       { p: 31,   c: 0,   f: 3.5 },
-  kiyma:       { p: 26,   c: 0,   f: 5   },
-  yulaf:       { p: 17,   c: 66,  f: 7   },
-  pirinc:      { p: 2.7,  c: 28,  f: 0.3 },
-  patates:     { p: 2,    c: 17,  f: 0.1 },
-  zeytinyagi:  { p: 0,    c: 0,   f: 100 },
-  badem:       { p: 21,   c: 22,  f: 50  },
+// Gıda veritabanı — protein/karb/yağ kaynakları ile porsiyon limitleri
+const FOOD_DB = {
+  yumurta:    { label: "Yumurta",       isUnit: true, pPerUnit: 7,  unit: "adet", min: 2,   max: 6   },
+  lor:        { label: "Lor peyniri",   p100: 12, unit: "g", min: 100, max: 250 },
+  tavuk:      { label: "Tavuk göğsü",   p100: 31, unit: "g", min: 120, max: 220 },
+  hindi:      { label: "Hindi göğsü",   p100: 29, unit: "g", min: 120, max: 220 },
+  kiyma:      { label: "Yağsız kıyma",  p100: 26, unit: "g", min: 140, max: 250 },
+  yulaf:      { label: "Yulaf",         c100: 66, unit: "g", min: 40,  max: 90  },
+  pirinc:     { label: "Pirinç",        c100: 28, unit: "g", min: 60,  max: 120 },
+  bulgur:     { label: "Bulgur",        c100: 23, unit: "g", min: 60,  max: 130 },
+  patates:    { label: "Patates",       c100: 17, unit: "g", min: 150, max: 350 },
+  zeytinyagi: { label: "Zeytinyağı",    f100: 100, unit: "g", min: 5,  max: 15  },
+  badem:      { label: "Badem",         f100: 50,  unit: "g", min: 10, max: 30  },
 };
 
-function buildMealPlan({ proteinG, carbG, fatG }) {
-  const MIN_P = 25; // minimum protein per meal (g)
+// 10 farklı plan şablonu — her "Hesapla"'da farklı biri seçilir
+const PLAN_TEMPLATES = [
+  { bp: "yumurta", bc: "yulaf", lp: "tavuk", lc: "pirinc", dp: "kiyma",  dc: "patates" },
+  { bp: "lor",     bc: "yulaf", lp: "hindi", lc: "pirinc", dp: "kiyma",  dc: "patates" },
+  { bp: "yumurta", bc: "yulaf", lp: "kiyma", lc: "bulgur", dp: "tavuk",  dc: "patates" },
+  { bp: "lor",     bc: "yulaf", lp: "tavuk", lc: "bulgur", dp: "hindi",  dc: "patates" },
+  { bp: "yumurta", bc: "yulaf", lp: "hindi", lc: "pirinc", dp: "tavuk",  dc: "patates" },
+  { bp: "lor",     bc: "yulaf", lp: "kiyma", lc: "pirinc", dp: "hindi",  dc: "patates" },
+  { bp: "yumurta", bc: "yulaf", lp: "tavuk", lc: "bulgur", dp: "hindi",  dc: "patates" },
+  { bp: "lor",     bc: "yulaf", lp: "hindi", lc: "bulgur", dp: "kiyma",  dc: "patates" },
+  { bp: "yumurta", bc: "yulaf", lp: "kiyma", lc: "pirinc", dp: "hindi",  dc: "patates" },
+  { bp: "lor",     bc: "yulaf", lp: "tavuk", lc: "pirinc", dp: "kiyma",  dc: "bulgur"  },
+];
 
-  // Adım 1: Öğün başına başlangıç protein hedefleri
-  let pB = proteinG * 0.25; // kahvaltı
-  let pL = proteinG * 0.30; // öğle
-  let pS = proteinG * 0.15; // ara
-  let pD = proteinG * 0.30; // akşam
+function buildMealPlan({ proteinG, carbG, fatG, planIdx = 0 }) {
+  const t = PLAN_TEMPLATES[planIdx % PLAN_TEMPLATES.length];
+  const MIN_P = 25;
 
-  // Adım 2: Minimum protein zorla — açığı öğle/akşamdan al
-  // (Ara öğün badem+elma'dan oluştuğu için protein minimum uygulanmaz)
-  const borrow = (deficit) => {
-    if (pL >= pD) {
-      pL = Math.max(MIN_P, pL - deficit);
-    } else {
-      pD = Math.max(MIN_P, pD - deficit);
-    }
+  // Öğün protein hedefleri (25/30/15/30)
+  let pB = proteinG * 0.25;
+  let pL = proteinG * 0.30;
+  let pD = proteinG * 0.30;
+
+  // Kahvaltı min 25g — açığı öğle/akşamdan al
+  const borrow = (d) => {
+    if (pL >= pD) pL = Math.max(MIN_P, pL - d);
+    else           pD = Math.max(MIN_P, pD - d);
   };
   if (pB < MIN_P) { borrow(MIN_P - pB); pB = MIN_P; }
 
-  // Adım 3: Öğün başına karbonhidrat ve yağ hedefleri
-  const cB = carbG * 0.25;
-  const cL = carbG * 0.30;
-  const cD = carbG * 0.30;
-  const fL = fatG  * 0.30;
-  const fS = fatG  * 0.15;
+  // Öğün karb/yağ hedefleri
+  const cB = carbG * 0.25, cL = carbG * 0.30, cD = carbG * 0.30;
+  const fL = fatG * 0.30,  fS = fatG * 0.15;
 
-  // Adım 4: Gramaj hesapla + limitler
+  // Protein kaynağı gramaj hesabı
+  const proteinAmount = (foodKey, target) => {
+    const f = FOOD_DB[foodKey];
+    if (f.isUnit) return { amount: clamp(Math.round(target / f.pPerUnit), f.min, f.max), unit: f.unit };
+    return { amount: clamp(Math.round(target * 100 / f.p100), f.min, f.max), unit: "g" };
+  };
+  const carbAmount = (foodKey, target) => {
+    const f = FOOD_DB[foodKey];
+    return { amount: clamp(Math.round(target * 100 / f.c100), f.min, f.max), unit: "g" };
+  };
+  const fatAmount = (foodKey, target) => {
+    const f = FOOD_DB[foodKey];
+    return { amount: clamp(Math.round(target * 100 / f.f100), f.min, f.max), unit: "g" };
+  };
 
   // KAHVALTI
-  // Karbonhidrat: yulaf (66g/100g)
-  const yulaf_g  = clamp(Math.round(cB / MACROS_PER_100G.yulaf.c  * 100), 40,  90);
+  const bp = proteinAmount(t.bp, pB);
+  const bc = carbAmount(t.bc, cB);
 
-  // ÖĞLE
-  // Protein: tavuk (31g/100g) — taşarsa fazlayı akşama aktar
-  const tavuk_raw      = Math.round(pL / MACROS_PER_100G.tavuk.p * 100);
-  const tavuk_g        = clamp(tavuk_raw, 120, 220);
-  const tavuk_p_overflow = Math.max(0, tavuk_raw - 220) * (MACROS_PER_100G.tavuk.p / 100);
-  // Karbonhidrat: pirinç (28g/100g) — taşarsa fazlayı patatesle akşama aktar
-  const pirinc_raw     = Math.round(cL / MACROS_PER_100G.pirinc.c * 100);
-  const pirinc_g       = clamp(pirinc_raw, 60, 120);
-  const pirinc_c_overflow = Math.max(0, pirinc_raw - 120) * (MACROS_PER_100G.pirinc.c / 100);
-  // Yağ: zeytinyağı (100g fat/100g = 1:1)
-  const zeytinyagi_g   = clamp(Math.round(fL), 5, 15);
+  // ÖĞLE — overflow akşama aktarılır
+  const lpFood = FOOD_DB[t.lp];
+  const lpRaw = lpFood.isUnit
+    ? Math.round(pL / lpFood.pPerUnit)
+    : Math.round(pL * 100 / lpFood.p100);
+  const lp = proteinAmount(t.lp, pL);
+  const lp_overflow = lpFood.isUnit
+    ? Math.max(0, lpRaw - lpFood.max) * lpFood.pPerUnit
+    : Math.max(0, lpRaw - lpFood.max) * (lpFood.p100 / 100);
 
-  // ARA ÖĞÜN
-  // Yağ: badem (50g fat/100g)
-  const badem_g = clamp(Math.round(fS / MACROS_PER_100G.badem.f * 100), 10, 30);
+  const lcRaw = Math.round(cL * 100 / FOOD_DB[t.lc].c100);
+  const lc = carbAmount(t.lc, cL);
+  const lc_overflow = Math.max(0, lcRaw - FOOD_DB[t.lc].max) * (FOOD_DB[t.lc].c100 / 100);
 
-  // AKŞAM
-  // Protein: kıyma (26g/100g) + taşan tavuk proteini
-  const kiyma_raw = Math.round((pD + tavuk_p_overflow) / MACROS_PER_100G.kiyma.p * 100);
-  const kiyma_g   = clamp(kiyma_raw, 140, 250);
-  // Karbonhidrat: patates (17g/100g) + taşan pirinç karbı
-  const patates_raw = Math.round((cD + pirinc_c_overflow) / MACROS_PER_100G.patates.c * 100);
-  const patates_g   = clamp(patates_raw, 150, 350);
+  const zey = fatAmount("zeytinyagi", fL);
+  const bad = fatAmount("badem", fS);
 
-  // Yapısal öğün verisi: { key, label, amount, unit }
+  // AKŞAM — protein + karb overflow eklenir
+  const dp = proteinAmount(t.dp, pD + lp_overflow);
+  const dc = carbAmount(t.dc, cD + lc_overflow);
+
   const meals = [
     {
       name: "Kahvaltı", icon: "☀️",
       items: [
-        { key: "yulaf",    label: "Yulaf",   amount: yulaf_g,   unit: "g"    },
-
-        { key: "muz",      label: "Muz",     amount: 1,         unit: "adet" },
+        { key: t.bp,  label: FOOD_DB[t.bp].label, ...bp },
+        { key: t.bc,  label: FOOD_DB[t.bc].label, ...bc },
+        { key: "muz", label: "Muz", amount: 1, unit: "adet" },
       ],
     },
     {
       name: "Öğle", icon: "🍽️",
       items: [
-        { key: "tavuk",      label: "Tavuk göğsü",  amount: tavuk_g,      unit: "g"   },
-        { key: "pirinc",     label: "Pirinç",        amount: pirinc_g,     unit: "g"   },
-        { key: "zeytinyagi", label: "Zeytinyağı",    amount: zeytinyagi_g, unit: "g"   },
-        { key: "sebze1",     label: "Karışık sebze", amount: null,         unit: null  },
+        { key: t.lp,         label: FOOD_DB[t.lp].label, ...lp },
+        { key: t.lc,         label: FOOD_DB[t.lc].label, ...lc },
+        { key: "zeytinyagi", label: "Zeytinyağı", ...zey },
+        { key: "sebze1",     label: "Karışık sebze", amount: null, unit: null },
       ],
     },
     {
       name: "Ara", icon: "🥜",
       items: [
-        { key: "badem", label: "Badem", amount: badem_g, unit: "g"    },
-        { key: "elma",  label: "Elma",  amount: 1,       unit: "adet" },
+        { key: "badem", label: "Badem", ...bad },
+        { key: "elma",  label: "Elma",  amount: 1, unit: "adet" },
       ],
     },
     {
       name: "Akşam", icon: "🌙",
       items: [
-        { key: "kiyma",   label: "Yağsız kıyma",  amount: kiyma_g,   unit: "g"  },
-        { key: "patates", label: "Patates",         amount: patates_g, unit: "g"  },
-        { key: "sebze2",  label: "Karışık sebze",  amount: null,      unit: null },
+        { key: t.dp,    label: FOOD_DB[t.dp].label, ...dp },
+        { key: t.dc,    label: FOOD_DB[t.dc].label, ...dc },
+        { key: "sebze2",label: "Karışık sebze", amount: null, unit: null },
       ],
     },
   ];
@@ -157,9 +176,8 @@ function buildMealPlan({ proteinG, carbG, fatG }) {
       }
     }
   }
-  const shoppingList = Object.values(totalsMap);
 
-  return { meals, shoppingList };
+  return { meals, shoppingList: Object.values(totalsMap) };
 }
 
 function itemDisplay({ label, amount, unit }) {
@@ -233,6 +251,7 @@ export default function Home() {
   const [result, setResult] = useState(null);
   const [errors, setErrors] = useState([]);
   const [copied, setCopied] = useState(false);
+  const [planIdx, setPlanIdx] = useState(0);
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -246,10 +265,11 @@ export default function Home() {
       return;
     }
     setErrors([]);
+    setPlanIdx(Math.floor(Math.random() * PLAN_TEMPLATES.length));
     setResult(calculate(form));
   };
 
-  const plan = result ? buildMealPlan(result) : null;
+  const plan = result ? buildMealPlan({ ...result, planIdx }) : null;
 
   const handleCopy = () => {
     if (!result || !plan) return;
