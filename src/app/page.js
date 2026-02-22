@@ -33,55 +33,114 @@ function calculate({ weight, height, age, gender, activity, goal, protein }) {
   };
 }
 
-function clamp(val, min, max) {
-  return Math.max(min, Math.min(max, val));
-}
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+const toNumber = (v) => {
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[^\d.]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+
+// Besin değerleri (g protein / g karbonhidrat / g yağ — her 100g için)
+const MACROS_PER_100G = {
+
+  tavuk:       { p: 31,   c: 0,   f: 3.5 },
+  kiyma:       { p: 26,   c: 0,   f: 5   },
+  yulaf:       { p: 17,   c: 66,  f: 7   },
+  pirinc:      { p: 2.7,  c: 28,  f: 0.3 },
+  patates:     { p: 2,    c: 17,  f: 0.1 },
+  zeytinyagi:  { p: 0,    c: 0,   f: 100 },
+  badem:       { p: 21,   c: 22,  f: 50  },
+};
 
 function buildMealPlan({ proteinG, carbG, fatG }) {
-  const carbScale = Math.max(carbG, 1) / 200;
-  const fatScale  = Math.max(fatG, 1)  / 60;
+  const MIN_P = 25; // minimum protein per meal (g)
 
-  const tavuk      = clamp(Math.round(proteinG * 1.2), 120, 260);
-  const kiyma      = clamp(Math.round(proteinG * 1.3), 140, 300);
-  const yogurt     = clamp(Math.round(proteinG * 3),   200, 500);
-  const yulaf      = clamp(Math.round(85  * carbScale),  60, 110);
-  const pirinc     = clamp(Math.round(105 * carbScale),  70, 140);
-  const patates    = clamp(Math.round(300 * carbScale), 200, 400);
-  const zeytinyagi = clamp(Math.round(10  * fatScale),    5,  15);
-  const badem      = clamp(Math.round(25  * fatScale),   15,  35);
+  // Adım 1: Öğün başına başlangıç protein hedefleri
+  let pB = proteinG * 0.25; // kahvaltı
+  let pL = proteinG * 0.30; // öğle
+  let pS = proteinG * 0.15; // ara
+  let pD = proteinG * 0.30; // akşam
+
+  // Adım 2: Minimum protein zorla — açığı öğle/akşamdan al
+  // (Ara öğün badem+elma'dan oluştuğu için protein minimum uygulanmaz)
+  const borrow = (deficit) => {
+    if (pL >= pD) {
+      pL = Math.max(MIN_P, pL - deficit);
+    } else {
+      pD = Math.max(MIN_P, pD - deficit);
+    }
+  };
+  if (pB < MIN_P) { borrow(MIN_P - pB); pB = MIN_P; }
+
+  // Adım 3: Öğün başına karbonhidrat ve yağ hedefleri
+  const cB = carbG * 0.25;
+  const cL = carbG * 0.30;
+  const cD = carbG * 0.30;
+  const fL = fatG  * 0.30;
+  const fS = fatG  * 0.15;
+
+  // Adım 4: Gramaj hesapla + limitler
+
+  // KAHVALTI
+  // Karbonhidrat: yulaf (66g/100g)
+  const yulaf_g  = clamp(Math.round(cB / MACROS_PER_100G.yulaf.c  * 100), 40,  90);
+
+  // ÖĞLE
+  // Protein: tavuk (31g/100g) — taşarsa fazlayı akşama aktar
+  const tavuk_raw      = Math.round(pL / MACROS_PER_100G.tavuk.p * 100);
+  const tavuk_g        = clamp(tavuk_raw, 120, 220);
+  const tavuk_p_overflow = Math.max(0, tavuk_raw - 220) * (MACROS_PER_100G.tavuk.p / 100);
+  // Karbonhidrat: pirinç (28g/100g) — taşarsa fazlayı patatesle akşama aktar
+  const pirinc_raw     = Math.round(cL / MACROS_PER_100G.pirinc.c * 100);
+  const pirinc_g       = clamp(pirinc_raw, 60, 120);
+  const pirinc_c_overflow = Math.max(0, pirinc_raw - 120) * (MACROS_PER_100G.pirinc.c / 100);
+  // Yağ: zeytinyağı (100g fat/100g = 1:1)
+  const zeytinyagi_g   = clamp(Math.round(fL), 5, 15);
+
+  // ARA ÖĞÜN
+  // Yağ: badem (50g fat/100g)
+  const badem_g = clamp(Math.round(fS / MACROS_PER_100G.badem.f * 100), 10, 30);
+
+  // AKŞAM
+  // Protein: kıyma (26g/100g) + taşan tavuk proteini
+  const kiyma_raw = Math.round((pD + tavuk_p_overflow) / MACROS_PER_100G.kiyma.p * 100);
+  const kiyma_g   = clamp(kiyma_raw, 140, 250);
+  // Karbonhidrat: patates (17g/100g) + taşan pirinç karbı
+  const patates_raw = Math.round((cD + pirinc_c_overflow) / MACROS_PER_100G.patates.c * 100);
+  const patates_g   = clamp(patates_raw, 150, 350);
 
   // Yapısal öğün verisi: { key, label, amount, unit }
   const meals = [
     {
       name: "Kahvaltı", icon: "☀️",
       items: [
-        { key: "yulaf",   label: "Yulaf",   amount: yulaf,  unit: "g"    },
-        { key: "yogurt",  label: "Yoğurt",  amount: yogurt, unit: "g"    },
-        { key: "muz",     label: "Muz",     amount: 1,      unit: "adet" },
+        { key: "yulaf",    label: "Yulaf",   amount: yulaf_g,   unit: "g"    },
+
+        { key: "muz",      label: "Muz",     amount: 1,         unit: "adet" },
       ],
     },
     {
       name: "Öğle", icon: "🍽️",
       items: [
-        { key: "tavuk",      label: "Tavuk göğsü",   amount: tavuk,      unit: "g" },
-        { key: "pirinc",     label: "Pirinç",         amount: pirinc,     unit: "g" },
-        { key: "zeytinyagi", label: "Zeytinyağı",     amount: zeytinyagi, unit: "g" },
-        { key: "sebze1",     label: "Karışık sebze",  amount: null,       unit: null },
+        { key: "tavuk",      label: "Tavuk göğsü",  amount: tavuk_g,      unit: "g"   },
+        { key: "pirinc",     label: "Pirinç",        amount: pirinc_g,     unit: "g"   },
+        { key: "zeytinyagi", label: "Zeytinyağı",    amount: zeytinyagi_g, unit: "g"   },
+        { key: "sebze1",     label: "Karışık sebze", amount: null,         unit: null  },
       ],
     },
     {
       name: "Ara", icon: "🥜",
       items: [
-        { key: "badem", label: "Badem", amount: badem, unit: "g"    },
-        { key: "elma",  label: "Elma",  amount: 1,     unit: "adet" },
+        { key: "badem", label: "Badem", amount: badem_g, unit: "g"    },
+        { key: "elma",  label: "Elma",  amount: 1,       unit: "adet" },
       ],
     },
     {
       name: "Akşam", icon: "🌙",
       items: [
-        { key: "kiyma",   label: "Yağsız kıyma",  amount: kiyma,   unit: "g"   },
-        { key: "patates", label: "Patates",         amount: patates, unit: "g"   },
-        { key: "sebze2",  label: "Karışık sebze",  amount: null,    unit: null  },
+        { key: "kiyma",   label: "Yağsız kıyma",  amount: kiyma_g,   unit: "g"  },
+        { key: "patates", label: "Patates",         amount: patates_g, unit: "g"  },
+        { key: "sebze2",  label: "Karışık sebze",  amount: null,      unit: null },
       ],
     },
   ];
@@ -530,6 +589,50 @@ export default function Home() {
             </div>
           </>
         )}
+        {/* Pro Paket */}
+        <div className="mt-8 bg-gradient-to-br from-gray-900 to-gray-800 border border-emerald-500/30 rounded-2xl p-6 shadow-xl">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-full px-2.5 py-0.5">
+                  PRO
+                </span>
+                <h2 className="text-lg font-bold text-gray-100">Pro Paket</h2>
+              </div>
+              <ul className="flex flex-col gap-2">
+                {[
+                  "30 günlük plan (PDF)",
+                  "Haftalık alışveriş listesi",
+                  "Daha fazla öğün alternatifi",
+                ].map((item) => (
+                  <li key={item} className="flex items-center gap-2 text-sm text-gray-400">
+                    <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex flex-col items-start sm:items-end gap-3">
+              <div>
+                <p className="text-2xl font-bold text-gray-100">₺199</p>
+                <p className="text-xs text-gray-500">tek sefer ödeme</p>
+              </div>
+              <a
+                href="https://example.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-gray-950 font-semibold px-5 py-2.5 rounded-xl transition text-sm whitespace-nowrap"
+              >
+                Pro Paketi Satın Al
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
     </main>
   );
